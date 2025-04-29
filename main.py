@@ -59,7 +59,7 @@ def get_stock_data():
     df["date"] = pd.to_datetime(df["date"])
 
 
-    numeric_cols = ["open", "high", "low", "close", "adj_close", "volume"]
+    # numeric_cols = ["open", "high", "low", "close", "adj_close", "volume"]
     # df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric, errors="coerce")
     # print(len(df))
 
