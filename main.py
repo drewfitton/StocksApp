@@ -55,11 +55,14 @@ def get_stock_data(ticker: str, date: str):
 
     company_name = TICKER_DICT.get(ticker, "Unknown Company")
     domain = f"https://logo.clearbit.com/{TICKER_TO_DOMAIN.get(ticker, 'Unknown Domain')}"
+    # Get total returns over the period
+    returns = round(((df["adj_close"].iloc[-1] - df["adj_close"].iloc[0]) / df["adj_close"].iloc[0]) * 100, 2)
 
     stock_entry = {
         "id": stock_id,
         "ticker": ticker,
         "company": company_name,
+        "returns": returns,
         "img": domain,
         "date": df["date"].dt.strftime("%Y-%m-%d").tolist(),
         "open": df["open"].tolist(),
