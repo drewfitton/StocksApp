@@ -275,14 +275,14 @@ def get_stock_returns(ticker, date):
     conn.close()
 
     # Calculate returns since date
-    print(df)
+    # print(df)
     df["returns"] = df["adj_close"].pct_change() * 100
 
     return df
 
 if __name__ == "__main__":
     # get_stock_data('AAPL', '2023-10-01')
-    df = get_prices('2015-01-01')
+    # df = get_prices('2015-01-01')
     # print(df)
     # reset_db()
     # # print(1)
