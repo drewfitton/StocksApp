@@ -1,6 +1,6 @@
 import yfinance as yf
 import psycopg2
-from config import DB_DETAILS, TICKER_DICT
+from config import DB_DETAILS, TICKER_DICT, TICKER_TO_DOMAIN
 from sqlalchemy import create_engine
 import pandas as pd
 # from tickers import tickers
@@ -168,43 +168,6 @@ def insert_price_data(df):
     conn.close()
 
 
-def get_stock_data(ticker, date):
-    conn = psycopg2.connect(**DB_DETAILS)
-    cur = conn.cursor()
-
-    # Get the stock ID first
-    cur.execute("SELECT id FROM stock WHERE symbol = %s", (ticker,))
-    stock = cur.fetchone()
-
-    if not stock:
-        cur.close()
-        conn.close()
-        return None
-
-    stock_id = stock[0]
-
-    # Get ALL stock prices after the given date
-    cur.execute("""
-        SELECT date, open, high, low, close, adj_close, volume
-        FROM stock_price
-        WHERE stock_id = %s AND date >= %s
-        ORDER BY date ASC
-    """, (stock_id, date))
-
-    rows = cur.fetchall()
-
-    # Optional: get column names
-    colnames = [desc[0] for desc in cur.description]
-
-    # Create DataFrame
-    df = pd.DataFrame(rows, columns=colnames)
-
-    cur.close()
-    conn.close()
-
-    return df
-
-
 def update_prices():
     conn = psycopg2.connect(**DB_DETAILS)
     cur = conn.cursor()
@@ -238,54 +201,90 @@ def update_prices():
     # Step 4: Insert new data
     insert_price_data(df)
 
-# @app.get("/stock/returns/{ticker}+{date}")
-def get_stock_returns(ticker, date):
+
+def get_stock_data(
+    category: str,
+    period: str,  # e.g., '1y', '6m', '2020-01-01'
+    offset: int,
+    limit: int,
+    sort: str
+):
     conn = psycopg2.connect(**DB_DETAILS)
     cur = conn.cursor()
 
-    # Get the stock ID first
-    cur.execute("SELECT id FROM stock WHERE symbol = %s", (ticker,))
-    stock = cur.fetchone()
+    tickers = list(TICKER_DICT.keys())  # TODO: filter by category if needed
+    cur.execute("SELECT id, symbol FROM stock WHERE symbol = ANY(%s)", (tickers,))
+    stock_rows = cur.fetchall()
+    symbol_to_id = {symbol: stock_id for stock_id, symbol in stock_rows}
+    ids = list(symbol_to_id.values())
 
-    if not stock:
+    if not ids:
         cur.close()
         conn.close()
-        return None
+        return {"results": [], "total": 0}
 
-    stock_id = stock[0]
-
-    # Get ALL stock prices after the given date
-    cur.execute("""
-        SELECT date, open, high, low, close, adj_close, volume
+    cur.execute(f"""
+        SELECT stock_id, date, open, high, low, close, adj_close, volume
         FROM stock_price
-        WHERE stock_id = %s AND date >= %s
-        ORDER BY date ASC
-    """, (stock_id, date))
+        WHERE stock_id = ANY(%s) AND date >= %s
+        ORDER BY stock_id, date ASC
+    """, (ids, period))  # assumes `period` is a start date string like '2020-01-01'
 
-    rows = cur.fetchall()
-
-    # Optional: get column names
-    colnames = [desc[0] for desc in cur.description]
-
-    # Create DataFrame
-    df = pd.DataFrame(rows, columns=colnames)
+    df = pd.DataFrame(cur.fetchall(), columns=[desc[0] for desc in cur.description])
     df["date"] = pd.to_datetime(df["date"])
+    df_sorted = df.sort_values(by=["stock_id", "date"])
+
+    # Compute returns
+    returns_df = df_sorted.groupby("stock_id")["adj_close"].agg(["first", "last"])
+    returns_df["returns"] = (returns_df["last"] - returns_df["first"]) / returns_df["first"] * 100
+    returns_df["returns"] = returns_df["returns"].round(2)
+
+    if sort == "returns_desc":
+        sorted_ids = returns_df.sort_values(by="returns", ascending=False).index.tolist()
+    else:
+        sorted_ids = returns_df.sort_values(by="returns", ascending=True).index.tolist()
+
+    total_count = len(sorted_ids)
+    page_ids = sorted_ids[offset: offset + limit]
+
+    df_page = df_sorted[df_sorted["stock_id"].isin(page_ids)]
+
+    # Ensure returns available
+    returns_lookup = returns_df["returns"].to_dict()
+
+    stock_entries = []
+    for stock_id, group_df in df_page.groupby("stock_id"):
+        ticker = next((sym for sym, sid in symbol_to_id.items() if sid == stock_id), None)
+        if not ticker:
+            continue
+
+        stock_entries.append({
+            "id": stock_id,
+            "ticker": ticker,
+            "company": TICKER_DICT.get(ticker, "Unknown Company"),
+            "img": f"https://logo.clearbit.com/{TICKER_TO_DOMAIN.get(ticker, 'Unknown Domain')}",
+            "returns": returns_lookup.get(stock_id, 0),
+            "date": group_df["date"].dt.strftime("%Y-%m-%d").tolist(),
+            "open": group_df["open"].tolist(),
+            "high": group_df["high"].tolist(),
+            "low": group_df["low"].tolist(),
+            "close": group_df["close"].tolist(),
+            "adj_close": group_df["adj_close"].tolist(),
+            "volume": group_df["volume"].tolist()
+        })
 
     cur.close()
     conn.close()
 
-    # Calculate returns since date
-    print(df)
-    df["returns"] = df["adj_close"].pct_change() * 100
-
-    return df
+    return {"results": stock_entries, "total": total_count}
 
 if __name__ == "__main__":
     # get_stock_data('AAPL', '2023-10-01')
-    df = get_prices('2015-01-01')
+    # df = get_prices('2015-01-01')
     # print(df)
     # reset_db()
     # # print(1)
     # insert_price_data(df)
-    update_prices()
+    get_stock_data()
+    # update_prices()
     # get_stock_returns('AAPL', '2023-01-01')
