@@ -285,6 +285,6 @@ if __name__ == "__main__":
     # reset_db()
     # # print(1)
     # insert_price_data(df)
-    get_stock_data()
-    # update_prices()
+    # get_stock_data()
+    update_prices()
     # get_stock_returns('AAPL', '2023-01-01')
