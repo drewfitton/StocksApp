@@ -1,11 +1,58 @@
 import yfinance as yf
 import psycopg2
-from config import DB_DETAILS, TICKER_DICT, TICKER_TO_DOMAIN
+from config import DB_DETAILS, TICKER_DICT, TICKER_TO_DOMAIN, RETURNS_TIMES
 from sqlalchemy import create_engine
 import pandas as pd
 from psycopg2.extras import execute_values
 from datetime import timedelta
 
+def reset_db():
+    conn = psycopg2.connect(**DB_DETAILS)
+    cur = conn.cursor()
+
+    cur.execute("DROP TABLE IF EXISTS stock CASCADE;")
+    cur.execute("DROP TABLE IF EXISTS stock_price CASCADE;")
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS stock (
+            id SERIAL PRIMARY KEY,
+            symbol TEXT NOT NULL UNIQUE,
+            company TEXT NOT NULL,
+            one_week NUMERIC,
+            one_month NUMERIC,
+            six_month NUMERIC,
+            one_year NUMERIC,
+            ytd NUMERIC,
+            five_year NUMERIC,
+            ML_ind NUMERIC
+        )
+    """)
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS stock_price (
+            id SERIAL PRIMARY KEY,
+            stock_id INTEGER,
+            date DATE NOT NULL,
+            open NUMERIC NOT NULL,
+            high NUMERIC NOT NULL,
+            low NUMERIC NOT NULL,
+            close NUMERIC NOT NULL,
+            adj_close NUMERIC NOT NULL,
+            volume NUMERIC NOT NULL,
+            FOREIGN KEY (stock_id) REFERENCES stock (id) ON DELETE CASCADE,
+            UNIQUE (stock_id, date)
+        )
+    """)
+
+
+    cur.execute("""
+        ALTER TABLE stock_price
+        ADD CONSTRAINT unique_stock_date UNIQUE (stock_id, date)
+    """)
+
+    conn.commit()
+    cur.close()
+    conn.close()
 
 def get_prices(date):
     df = yf.download(list(TICKER_DICT.keys()), interval='1d', start=date, auto_adjust=False, group_by='ticker')
@@ -29,17 +76,11 @@ def get_prices(date):
     return df
 
 
+
 def insert_price_data(df):
     # Connect to the database
     conn = psycopg2.connect(**DB_DETAILS)
     cur = conn.cursor()
-
-    # 1. Insert all stocks first
-    stock_data = [(symbol, company) for symbol, company in TICKER_DICT.items()]
-    execute_values(cur,
-        "INSERT INTO stock (symbol, company) VALUES %s ON CONFLICT(symbol) DO NOTHING",
-        stock_data
-    )
 
     # 2. Fetch all stock ids at once
     cur.execute("SELECT id, symbol FROM stock")
@@ -82,40 +123,6 @@ def insert_price_data(df):
     cur.close()
     conn.close()
 
-
-def update_prices():
-    conn = psycopg2.connect(**DB_DETAILS)
-    cur = conn.cursor()
-
-    # Step 1: Get the latest date for each stock
-    cur.execute("""
-        SELECT s.symbol, MAX(sp.date)
-        FROM stock s
-        LEFT JOIN stock_price sp ON s.id = sp.stock_id
-        GROUP BY s.symbol
-    """)
-    latest_dates = cur.fetchall()
-
-    # Build a dict: {symbol: latest_date}
-    symbol_to_latest_date = {symbol: latest_date for symbol, latest_date in latest_dates}
-
-    conn.commit()
-    cur.close()
-    conn.close()
-
-    # Step 2: Determine the earliest date to fetch
-    # If a stock has no data, start from a default
-    start_date = min([
-        (date + pd.Timedelta(days=1)) if date else pd.Timestamp('2015-01-01')
-        for date in symbol_to_latest_date.values()
-    ]).strftime('%Y-%m-%d')
-
-    # Step 3: Call get_prices with start_date
-    df = get_prices(start_date)
-
-    # Step 4: Insert new data
-    insert_price_data(df)
-
 def insert_stock_metadata(cur, ticker_data):
     """
     ticker_data: list of tuples like (symbol, company, ret_1w, ret_1m, ret_6m, ret_1y, ret_ytd, ret_5y)
@@ -130,15 +137,7 @@ def insert_stock_metadata(cur, ticker_data):
     insert_sql = """
         INSERT INTO stock (symbol, company, one_week, one_month, six_month, one_year, ytd, five_year, ML_ind)
         VALUES %s
-        ON CONFLICT(symbol)
-        DO UPDATE SET
-            one_week = EXCLUDED.one_week,
-            one_month = EXCLUDED.one_month,
-            six_month = EXCLUDED.six_month,
-            one_year = EXCLUDED.one_year,
-            ytd = EXCLUDED.ytd,
-            five_year = EXCLUDED.five_year,
-            ML_ind = EXCLUDED.ML_ind
+        ON CONFLICT(symbol) DO NOTHING
     """
 
     execute_values(cur, insert_sql, stock_rows)
@@ -190,9 +189,9 @@ def calculate_returns(df):
 
 
 if __name__ == "__main__":
-    update_prices()
-
     df = get_prices('2020-01-01')
+    reset_db()
+
     returns_data = calculate_returns(df)
 
     conn = psycopg2.connect(**DB_DETAILS)
@@ -202,3 +201,6 @@ if __name__ == "__main__":
     conn.commit()
     cur.close()
     conn.close()
+
+    insert_price_data(df)  # This still handles price rows
+

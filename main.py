@@ -1,13 +1,17 @@
 from datetime import datetime, timedelta
+from time import time
 from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
 import yfinance as yf
 import pandas as pd
-from config import DB_DETAILS, TICKER_DICT, TICKER_TO_DOMAIN, STOCK_CATEGORIES
+from config import DB_DETAILS, TICKER_DICT, TICKER_TO_DOMAIN, STOCK_CATEGORIES, RETURNS_TIMES
 from fastapi.middleware.cors import CORSMiddleware
 import psycopg2
 from typing import Optional, List
 import indicators
+# from ml_evaluation.StrategyLearner import StrategyLearner as sl
+import matplotlib.pyplot as plt
+import matplotlib
 
 app = FastAPI()
 
@@ -23,6 +27,7 @@ app.add_middleware(
 def get_stock_data(
     category: str = Query(...),
     period: str = Query(...),
+    returns_period: str = Query(...),
     offset: int = Query(0),
     limit: int = Query(20),
     sort: str = Query("returns_desc"),
@@ -31,12 +36,15 @@ def get_stock_data(
     conn = psycopg2.connect(**DB_DETAILS)
     cur = conn.cursor()
     # print(inds)
+    inds = ['Bollinger', 'MACD', 'RSI']
 
     tickers = STOCK_CATEGORIES[category] if category != "All" else list(TICKER_DICT.keys()) 
     cur.execute("SELECT id, symbol FROM stock WHERE symbol = ANY(%s)", (tickers,))
     stock_rows = cur.fetchall()
     symbol_to_id = {symbol: stock_id for stock_id, symbol in stock_rows}
     ids = list(symbol_to_id.values())
+
+    total_count = len(ids)
 
     if not ids:
         cur.close()
@@ -59,25 +67,43 @@ def get_stock_data(
     df_sorted = df.sort_values(by=["stock_id", "date"])
 
     original_start_date = pd.to_datetime(period)
-    ### Compute returns ###
-    returns_filtered = df_sorted[df_sorted["date"] >= original_start_date]
-    returns_df = returns_filtered.groupby("stock_id")["adj_close"].agg(["first", "last"])
-    returns_df["returns"] = (returns_df["last"] - returns_df["first"]) / returns_df["first"] * 100
-    returns_df["returns"] = returns_df["returns"].round(2)
 
+    ret_column = RETURNS_TIMES.get(returns_period, "ytd")
 
-    if sort == "returns_desc":
-        sorted_ids = returns_df.sort_values(by="returns", ascending=False).index.tolist()
-    else:
-        sorted_ids = returns_df.sort_values(by="returns", ascending=True).index.tolist()
+    if sort.startswith("returns_"):
+        sort_order = "DESC" if sort == "returns_desc" else "ASC"
+        cur.execute(
+            f"""
+            SELECT id, symbol, {ret_column}, ml_ind
+            FROM stock
+            WHERE id = ANY(%s)
+            ORDER BY {ret_column} {sort_order}
+            LIMIT %s OFFSET %s
+            """,
+            (ids, limit, offset)
+        )
+    elif sort.startswith("ml_ind_"):
+        sort_order = "DESC" if sort == "ml_ind_desc" else "ASC"
+        cur.execute(
+            f"""
+            SELECT id, symbol, {ret_column}, ml_ind
+            FROM stock
+            WHERE id = ANY(%s)
+            ORDER BY ml_ind {sort_order}
+            LIMIT %s OFFSET %s
+            """,
+            (ids, limit, offset)
+        )
 
-    total_count = len(sorted_ids)
-    page_ids = sorted_ids[offset: offset + limit]
+    sorted_rows = cur.fetchall()
+    print(sorted_rows)
+    page_ids = [row[0] for row in sorted_rows]
+    returns_lookup = {row[0]: float(row[2]) if row[2] is not None else 0 for row in sorted_rows}
+    ml_ind_lookup = {row[0]: row[3] if row[3] is not None else 0 for row in sorted_rows}
+
 
     df_page = df_sorted[df_sorted["stock_id"].isin(page_ids)]
 
-    # Ensure returns available
-    returns_lookup = returns_df["returns"].to_dict()
 
     stock_entries = []
     for stock_id, group_df in df_page.groupby("stock_id"):
@@ -97,32 +123,100 @@ def get_stock_data(
         # Filter after indicator computation
         group_df = group_df[group_df["date"] >= original_start_date]
         # print(group_df)
+        # print(1000)
+        # print(group_df)
+        # print(group_df)
+      
+        group_df = group_df.bfill().ffill()
+        # learner = sl()
+        # df = learner.add_evidence(df = group_df)
+        # matplotlib.use('Agg')
+        # fig = plt.figure(figsize=(9, 6))
+        # plt.plot(df['macd_score'], color='purple')
+        # plt.plot(df['MACD'], color='r')
+        # plt.plot(df['MACD_Signal'], color='green')
+        # plt.plot(df['macd_slope'], color='blue')
+        # plt.legend(["Score", "MACD", "MACD Signal", "MACD Slope"])
+        # plt.xlabel("Date")
+        # plt.ylabel("MACD Evaluation")
+        # plt.title("MACD Evaluation")
+        # plt.tick_params(axis='x', rotation=45)
+        # plt.savefig("./ml_evaluation/images/MACDvsMACDScore.png")
+        # plt.close()
+
+        
         stock_entries.append({
             "id": stock_id,
             "ticker": ticker,
             "company": TICKER_DICT.get(ticker, "Unknown Company"),
             "img": f"https://logo.clearbit.com/{TICKER_TO_DOMAIN.get(ticker, 'Unknown Domain')}",
             "returns": round(returns_lookup.get(stock_id, 0),2),
+            "ml_ind": round(ml_ind_lookup.get(stock_id, 0),5),
             "date": group_df["date"].dt.strftime("%Y-%m-%d").tolist(),
-            "open": group_df["open"].tolist(),
-            "high": group_df["high"].tolist(),
-            "low": group_df["low"].tolist(),
-            "close": group_df["close"].tolist(),
-            "adj_close": group_df["adj_close"].tolist(),
-            "lower_bollinger": group_df["lower_bollinger"].tolist() if "lower_bollinger" in group_df else None,
-            "upper_bollinger": group_df["upper_bollinger"].tolist() if "upper_bollinger" in group_df else None,
-            "rsi": group_df["RSI"].tolist() if "RSI" in group_df else None,
-            "macd": group_df["MACD"].tolist() if "MACD" in group_df else None,
-            "macd_signal": group_df["MACD_Signal"].tolist() if "MACD_Signal" in group_df else None,
-            "volume": group_df["volume"].tolist()
+            "open": group_df["open"].astype(float).tolist(),
+            "high": group_df["high"].astype(float).tolist(),
+            "low": group_df["low"].astype(float).tolist(),
+            "close": group_df["close"].astype(float).tolist(),
+            "adj_close": group_df["adj_close"].astype(float).tolist(),
+            "lower_bollinger": group_df["lower_bollinger"].astype(float).tolist() if "lower_bollinger" in group_df else None,
+            "upper_bollinger": group_df["upper_bollinger"].astype(float).tolist() if "upper_bollinger" in group_df else None,
+            "rsi": group_df["RSI"].astype(float).tolist() if "RSI" in group_df else None,
+            "macd": group_df["MACD"].astype(float).tolist() if "MACD" in group_df else None,
+            "macd_signal": group_df["MACD_Signal"].astype(float).tolist() if "MACD_Signal" in group_df else None,
+            "volume": group_df["volume"].astype(float).tolist(),
         })
-
-    cur.close()
+        
+    cur.close() 
     conn.close()
 
     return {"results": stock_entries, "total": total_count}
 
+@app.get("/stock/all_returns/")
+def get_all_stock_returns(
+    category: str = Query(...),
+    period: str = Query(...),
+):
+    conn = psycopg2.connect(**DB_DETAILS)
+    cur = conn.cursor()
 
+    tickers = STOCK_CATEGORIES[category] if category != "All" else list(TICKER_DICT.keys()) 
+
+    # Join to get ticker and company info
+    cur.execute("""
+        SELECT sp.stock_id, s.symbol, s.company, sp.date, sp.adj_close
+        FROM stock_price sp
+        JOIN stock s ON sp.stock_id = s.id
+        WHERE s.symbol = ANY(%s) AND sp.date >= %s
+        ORDER BY sp.stock_id, sp.date ASC
+    """, (tickers, period))
+
+    rows = cur.fetchall()
+    colnames = [desc[0] for desc in cur.description]
+    cur.close()
+    conn.close()
+
+    df = pd.DataFrame(rows, columns=colnames)
+    df["date"] = pd.to_datetime(df["date"])
+
+    # Group by stock and calculate total return for each
+    result = []
+    for stock_id, group in df.groupby("stock_id"):
+        group = group.sort_values("date")
+        if len(group) > 1:
+            initial = group.iloc[0]["adj_close"]
+            final = group.iloc[-1]["adj_close"]
+            total_return = ((final - initial) / initial) * 100
+        else:
+            total_return = 0.0
+
+        result.append({
+            "id": stock_id,
+            "ticker": group.iloc[0]["symbol"],
+            "company": group.iloc[0]["company"],
+            "returns": round(total_return, 2)
+        })
+    total_count = len(result)
+    return {'results': result, 'total': total_count}
 
 @app.get("/stock/returns/{ticker}+{date}")
 def get_stock_returns(ticker, date):
