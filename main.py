@@ -96,7 +96,6 @@ def get_stock_data(
         )
 
     sorted_rows = cur.fetchall()
-    print(sorted_rows)
     page_ids = [row[0] for row in sorted_rows]
     returns_lookup = {row[0]: float(row[2]) if row[2] is not None else 0 for row in sorted_rows}
     ml_ind_lookup = {row[0]: row[3] if row[3] is not None else 0 for row in sorted_rows}
@@ -111,38 +110,13 @@ def get_stock_data(
         if not ticker:
             continue
 
-        # print(group_df)
         for ind in inds:
-            # print(group_df)
             ind_df = indicators.__dict__[f"calc_{ind}"](group_df[['adj_close']], 'adj_close')
-            # print(ind_df)
             group_df = pd.concat([ind_df, group_df], axis=1)
-            # print(group_df[ind])
-            # print(group_df)
 
         # Filter after indicator computation
         group_df = group_df[group_df["date"] >= original_start_date]
-        # print(group_df)
-        # print(1000)
-        # print(group_df)
-        # print(group_df)
-      
         group_df = group_df.bfill().ffill()
-        # learner = sl()
-        # df = learner.add_evidence(df = group_df)
-        # matplotlib.use('Agg')
-        # fig = plt.figure(figsize=(9, 6))
-        # plt.plot(df['macd_score'], color='purple')
-        # plt.plot(df['MACD'], color='r')
-        # plt.plot(df['MACD_Signal'], color='green')
-        # plt.plot(df['macd_slope'], color='blue')
-        # plt.legend(["Score", "MACD", "MACD Signal", "MACD Slope"])
-        # plt.xlabel("Date")
-        # plt.ylabel("MACD Evaluation")
-        # plt.title("MACD Evaluation")
-        # plt.tick_params(axis='x', rotation=45)
-        # plt.savefig("./ml_evaluation/images/MACDvsMACDScore.png")
-        # plt.close()
 
         
         stock_entries.append({
