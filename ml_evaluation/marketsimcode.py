@@ -93,7 +93,7 @@ def compute_portvals(
         SELECT * from stock_price
         WHERE stock_id = %s
         ORDER BY date ASC 
-    """, (str(stock_id)))
+    """, (str(stock_id),))
     prices = pd.DataFrame(cur.fetchall(), columns=[desc[0] for desc in cur.description])[-len(orders):]
     # print(prices)
     prices['date'] = pd.to_datetime(prices['date'])

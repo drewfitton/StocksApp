@@ -1,10 +1,13 @@
 import yfinance as yf
 import psycopg2
 from config import DB_DETAILS, TICKER_DICT, TICKER_TO_DOMAIN
+from StrategyLearner import StrategyLearner as sl
 from sqlalchemy import create_engine
 import pandas as pd
 from psycopg2.extras import execute_values
 from datetime import timedelta
+import indicators
+import numpy as np
 
 
 def get_prices(date):
@@ -188,6 +191,68 @@ def calculate_returns(df):
 
     return results
 
+def populdate_ml_ind():
+    conn = psycopg2.connect(**DB_DETAILS)
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT * from stock_price
+    """)
+
+    df = pd.DataFrame(cur.fetchall(), columns=[desc[0] for desc in cur.description])
+    df["date"] = pd.to_datetime(df["date"])
+    df["adj_close"] = df["adj_close"].astype(float)
+    df["close"] = df["close"].astype(float)
+    df["open"] = df["open"].astype(float)
+    df["high"] = df["high"].astype(float)
+    df["low"] = df["low"].astype(float)
+    df["volume"] = df["volume"].astype(float)
+
+    df_sorted = df.sort_values(by=["stock_id", "date"])
+
+    indications = {}
+    i = 0
+    returns = {}
+    learner = sl()
+    for stock_id, group_df in df_sorted.groupby("stock_id"):
+
+        for ind in ['Bollinger', 'RSI', 'MACD']:
+            ind_df = indicators.__dict__[f"calc_{ind}"](group_df[['adj_close']], 'adj_close')
+            # print(ind_df)
+            group_df = pd.concat([ind_df, group_df], axis=1)
+        
+        group_df = group_df.bfill().ffill()[20:]
+
+        learner.add_evidence(df=group_df[:-50])
+
+    for stock_id, group_df in df_sorted.groupby("stock_id"):
+
+        for ind in ['Bollinger', 'RSI', 'MACD']:
+            ind_df = indicators.__dict__[f"calc_{ind}"](group_df[['adj_close']], 'adj_close')
+            # print(ind_df)
+            group_df = pd.concat([ind_df, group_df], axis=1)
+        
+        group_df = group_df.bfill().ffill()
+
+
+        mlInds = learner.testPolicy(df=group_df[-50:])
+
+        mlInds = np.array(mlInds).flatten()
+
+        indications[stock_id] = float(mlInds[-1])
+
+    
+    for id in indications.keys():
+        cur.execute("""
+            UPDATE stock
+            SET ml_ind = %s
+            WHERE id = %s
+        """, (indications[id], id))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
 
 if __name__ == "__main__":
     update_prices()
@@ -202,3 +267,5 @@ if __name__ == "__main__":
     conn.commit()
     cur.close()
     conn.close()
+
+    populdate_ml_ind()
